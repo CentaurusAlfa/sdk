@@ -20,6 +20,7 @@
  */
 
 #include "mega.h"
+#include "mega/actionpacket.h"
 #include "mega/hashcash.h"
 #include "mega/heartbeats.h"
 #include "mega/mediafileattribute.h"
@@ -3068,6 +3069,9 @@ void MegaClient::exec()
 
                 if (*pendingsc->in.c_str() == '{')
                 {
+                    // for test
+                    pendingsc->mChunked = true;
+
                     insca = false;
                     insca_notlast = false;
                     jsonsc.begin(pendingsc->in.c_str());
@@ -3217,6 +3221,12 @@ void MegaClient::exec()
                     pendingscTimedOut = true;
                     pendingsc.reset();
                     btsc.reset();
+                }
+
+                // if sc is set to chunked, process what we have so far
+                 if (pendingsc != nullptr && pendingsc->mChunked &&
+                     pendingsc->bufpos > pendingsc->notifiedbufpos) {
+                    jsonsc.begin(pendingsc->in.c_str());
                 }
                 break;
             default:
@@ -5510,6 +5520,38 @@ bool MegaClient::procsc()
                 }
             }
             jsonsc.pos = actionpacketStart;
+            
+            
+            if (pendingsc->mChunked) {
+                if (activeap == nullptr)
+                {
+                    auto testpos = jsonsc.pos;
+                    jsonsc.enterobject();
+                    if (jsonsc.getnameid() == makeNameid("a"))
+                    {
+                        auto testname = jsonsc.getnameidvalue();
+                        if (testname == makeNameid("t")) { // node addition
+                            activeap = new ActionpacketNewNodes(this);
+                        }
+                    }
+                    jsonsc.pos = testpos; //rewind
+                }
+
+                if (activeap) {
+                    size_t consumed = activeap->processChunk(jsonsc.pos);
+                    if (activeap->finishedChunk()) {
+                        jsonsc.pos += consumed;
+                        delete activeap;
+                        activeap = nullptr;
+                        if (jsonsc.pos) continue;
+                        else return true;
+                    } else {
+                        // need more data
+                        jsonsc.pos = nullptr;
+                        return true;
+                    }
+                }
+            }
 
             if (jsonsc.enterobject())
             {
@@ -24430,6 +24472,45 @@ void MegaClient::setMegaURL(const std::string& url)
 {
     std::unique_lock lock(megaUrlMutex);
     MEGAURL = url;
+}
+
+std::shared_ptr<Node> MegaClient::checkFileExistsRemotely(const std::string& fileName, const LocalPath& localPath)
+{
+    if (fileName.empty() || localPath.empty())
+    {
+        return nullptr;
+    }
+
+    auto fa = fsaccess->newfileaccess();
+    if (fa->fopen(localPath, true, false, FSLogging::logOnError))
+    {
+        FileFingerprint fp;
+        fp.genfingerprint(fa.get());
+        sharedNode_vector remoteNodes = mNodeManager.getNodesByFingerprint(fp);
+        if (remoteNodes.empty())
+        {
+            return nullptr;
+        }
+
+        for(auto remoteNode : remoteNodes) {
+            if (remoteNode->displayname() == fileName)
+            {
+                std::string remoteKey = remoteNode->nodekey();
+                const char *iva = &remoteKey[SymmCipher::KEYLENGTH];
+
+                SymmCipher cipher;
+                cipher.setkey((byte*)&remoteKey[0], remoteNode->type);
+
+                int64_t remoteIv = MemAccess::get<int64_t>(iva);
+                int64_t remoteMac = MemAccess::get<int64_t>(iva + sizeof(int64_t));
+
+                auto result = generateMetaMac(cipher, *fa, remoteIv);
+                if (result.first && result.second == remoteMac)
+                    return remoteNode;
+            }
+        }
+    }
+    return nullptr;
 }
 
 } // namespace
