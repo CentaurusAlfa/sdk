@@ -2302,6 +2302,8 @@ public:
     std::shared_ptr<Node> nodebyfingerprint(LocalNode*);
 #endif /* ENABLE_SYNC */
 
+    std::shared_ptr<Node> checkFileExistsRemotely(const std::string& fileName,
+                                                  const LocalPath& localPath);
 private:
     // Private helper method for getRecentActions
     recentactions_vector getRecentActionsFromSharedNodeVector(sharedNode_vector&& v);
